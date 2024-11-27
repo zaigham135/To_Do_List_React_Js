@@ -1,5 +1,5 @@
 {
-  "name": "to_do_list_react_js",
+  "name": "reactjs_project_e_commerce",
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
@@ -12,6 +12,7 @@
   "license": "ISC",
   "dependencies": {
     "cars": "^1.1.6",
-    "json-server": "^1.0.0-alpha.23"
+    "json-server": "^0.17.4",
+    "serve": "^14.2.4"
   }
 }
