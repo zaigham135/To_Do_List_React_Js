@@ -2,10 +2,18 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const mysql = require("mysql2");
 const cors = require("cors");
+const rateLimit = require("express-rate-limit"); // Import rate limiting middleware
 
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
+
+// Rate limiting middleware to limit requests
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+});
+app.use(limiter); // Apply rate limiting to all requests
 
 // MySQL connection setup
 // const db = mysql.createConnection({
@@ -14,27 +22,27 @@ app.use(bodyParser.json());
 //   password: "admin", // your MySQL password
 //   database: "todolist",  // your database name
 // });
-const db = mysql.createConnection({
-  host: "bmeptlaonyp4rdlpgoy9-mysql.services.clever-cloud.com", // or your MySQL host
-  user: "uzdltu6roacm8wmd",      // your MySQL username
-  password: "N8siWLoN4YK3kTtNLIDX", // your MySQL password
-  database: "bmeptlaonyp4rdlpgoy9",  // your database name
+const pool = mysql.createPool({
+  host: "bmeptlaonyp4rdlpgoy9-mysql.services.clever-cloud.com",
+  user: "uzdltu6roacm8wmd",
+  password: "N8siWLoN4YK3kTtNLIDX",
+  database: "bmeptlaonyp4rdlpgoy9",
+  connectionLimit: 20, // Set the maximum number of connections
 });
 
-
-
-
-db.connect((err) => {
+// Use pool to connect
+pool.getConnection((err, connection) => {
   if (err) {
     console.error("Error connecting to MySQL:", err);
     return;
   }
   console.log("Connected to MySQL database.");
+  connection.release(); // Release the connection back to the pool
 });
 
 // Get all items
 app.get("/items", (req, res) => {
-  db.query("SELECT * FROM infodata", (err, results) => {
+  pool.query("SELECT * FROM infodata", (err, results) => {
     if (err) {
       console.error("Database query error:", err);
       res.status(500).json({ error: "Failed to fetch items." });
@@ -81,7 +89,7 @@ app.put("/items/:id", (req, res) => {
     }
 
     const query = "UPDATE infodata SET title = ?, value = ?, date = ?, section = ? WHERE id = ?";
-    db.query(query, [title, value, formattedDate,section, id], (err, results) => {
+    pool.query(query, [title, value, formattedDate,section, id], (err, results) => {
         if (err) {
             console.error(err);
             res.status(500).json({ error: "Failed to update item." });
@@ -109,7 +117,7 @@ app.post("/List", (req, res) => {
 
   const query = "INSERT INTO infodata (title, value, date, section) VALUES (?, ?, ?, ?)";
   
-  db.query(query, [title, value, formattedDate, section], (err, results) => {
+  pool.query(query, [title, value, formattedDate, section], (err, results) => {
     if (err) {
       console.error("Database insert error:", err); // Log the error
       res.status(500).json({ error: "Failed to add item." });
@@ -129,7 +137,7 @@ app.delete("/items/:id", (req, res) => {
   const { id } = req.params;
 
   const query = "DELETE FROM infodata WHERE id = ?";
-  db.query(query, [id], (err, results) => {
+  pool.query(query, [id], (err, results) => {
     if (err) {
       console.error(err);
       res.status(500).json({ error: "Failed to delete item." });
