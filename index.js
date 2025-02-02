@@ -16,7 +16,7 @@ const limiter = rateLimit({
 app.use(limiter); // Apply rate limiting to all requests
 
 // MySQL connection setup
-// const db = mysql.createConnection({
+// const pool = mysql.createConnection({
 //   host: "localhost", // or your MySQL host
 //   user: "root",      // your MySQL username
 //   password: "admin", // your MySQL password
@@ -27,7 +27,7 @@ const pool = mysql.createPool({
   user: "uzdltu6roacm8wmd",
   password: "N8siWLoN4YK3kTtNLIDX",
   database: "bmeptlaonyp4rdlpgoy9",
-  connectionLimit: 20, // Set the maximum number of connections
+  connectionLimit: 2, // Set the maximum number of connections
 });
 
 // Use pool to connect
