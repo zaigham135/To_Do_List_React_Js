@@ -15,6 +15,7 @@ app.use(bodyParser.json());
 
 const SECRET_KEY = "your_secret_key"; // Change this to a secure key
 const REFRESH_KEY = "your_refresh_secret_key"; // Add refresh key
+const BASE_URL = process.env.BASE_URL || 'https://to-do-list-react-js.onrender.com'; // Replace with your actual deployed server URL
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -79,7 +80,7 @@ app.post("/signup", upload.single('profile_photo'), async (req, res) => {
     
     // Update the profile photo URL to include the full server URL
     const profile_photo = req.file 
-      ? `http://localhost:5000/uploads/${req.file.filename}`  // Full URL
+      ? `${BASE_URL}/uploads/${req.file.filename}`  // Using BASE_URL instead of localhost
       : null;
 
     console.log('File uploaded:', req.file); // Debug log
@@ -332,7 +333,7 @@ app.put("/profile", verifyToken, upload.single('profile_photo'), async (req, res
     // Handle profile photo update if provided
     let profile_photo = undefined;
     if (req.file) {
-      profile_photo = `http://localhost:5000/uploads/${req.file.filename}`;
+      profile_photo = `${BASE_URL}/uploads/${req.file.filename}`; // Using BASE_URL instead of localhost
       
       // Get old profile photo to delete
       const [oldPhoto] = await pool.promise().query(
@@ -342,7 +343,7 @@ app.put("/profile", verifyToken, upload.single('profile_photo'), async (req, res
 
       // Delete old profile photo if it exists
       if (oldPhoto[0]?.profile_photo) {
-        const oldPhotoPath = oldPhoto[0].profile_photo.replace('http://localhost:5000/', '');
+        const oldPhotoPath = oldPhoto[0].profile_photo.replace(`${BASE_URL}/`, '');
         if (fs.existsSync(oldPhotoPath)) {
           fs.unlinkSync(oldPhotoPath);
         }
