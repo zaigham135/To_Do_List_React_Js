@@ -58,9 +58,29 @@ const pool = mysql.createPool({
   password: "N8siWLoN4YK3kTtNLIDX",
   database: "bmeptlaonyp4rdlpgoy9",
   waitForConnections: true,
-  connectionLimit: 10,
+  connectionLimit: 5, // Reduce from 10 to 5
   queueLimit: 0,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 0
 });
+
+// Add a utility function for retrying database operations
+async function retryOperation(operation, maxRetries = 3) {
+  let lastError;
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (error.code === 'ER_USER_LIMIT_REACHED') {
+        await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1))); // Exponential backoff
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastError;
+}
 
 // ✅ Check database connection
 pool.getConnection((err, connection) => {
@@ -326,9 +346,39 @@ app.get("/profile", verifyToken, async (req, res) => {
 // Update Profile API (Protected Route)
 app.put("/profile", verifyToken, upload.single('profile_photo'), async (req, res) => {
   const userId = req.user.userId;
-  const { first_name, last_name, phone_number } = req.body;
+  const { first_name, last_name, phone_number, email } = req.body;
   
   try {
+    // Validate email format if provided
+    if (email) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return res.status(400).json({ error: "Invalid email format" });
+      }
+      
+      // Check if email already exists for another user
+      const [emailExists] = await pool.promise().query(
+        "SELECT id FROM users WHERE email = ? AND id != ?",
+        [email, userId]
+      );
+      
+      if (emailExists.length > 0) {
+        return res.status(400).json({ error: "Email already in use" });
+      }
+    }
+
+    // Check if phone number already exists for another user
+    if (phone_number) {
+      const [phoneExists] = await pool.promise().query(
+        "SELECT id FROM users WHERE phone_number = ? AND id != ?",
+        [phone_number, userId]
+      );
+      
+      if (phoneExists.length > 0) {
+        return res.status(400).json({ error: "Phone number already in use" });
+      }
+    }
+
     // Handle profile photo update if provided
     let profile_photo = undefined;
     if (req.file) {
@@ -365,12 +415,15 @@ app.put("/profile", verifyToken, upload.single('profile_photo'), async (req, res
       updateFields.push("phone_number = ?");
       values.push(phone_number);
     }
+    if (email) {
+      updateFields.push("email = ?");
+      values.push(email);
+    }
     if (profile_photo) {
       updateFields.push("profile_photo = ?");
       values.push(profile_photo);
     }
 
-    // Add userId to values array
     values.push(userId);
 
     if (updateFields.length === 0) {
@@ -461,20 +514,20 @@ app.get("/items", verifyToken, (req, res) => {
 
 // Update items POST endpoint with better error handling
 app.post("/items", verifyToken, (req, res) => {
-  const { title, value, date, section } = req.body;
+  const { title, value, date, section, target } = req.body;  // Added target
   const userId = req.user.userId; // Changed from id to userId to match token payload
 
-  console.log('Request body:', { title, value, date, section, userId });
+  console.log('Request body:', { title, value, date, section, target, userId });
 
   if (!title || !value || !date || !section) {
     return res.status(400).json({ 
       error: "All fields are required",
-      received: { title, value, date, section }
+      received: { title, value, date, section, target }
     });
   }
 
-  const query = "INSERT INTO infodata (title, value, date, section, user_id) VALUES (?, ?, ?, ?, ?)";
-  const values = [title, value, date, section, userId];
+  const query = "INSERT INTO infodata (title, value, date, section, target, user_id) VALUES (?, ?, ?, ?, ?, ?)";
+  const values = [title, value, date, section, target || 0, userId];  // Use 0 as default for target
 
   console.log('Executing query:', query);
   console.log('With values:', values);
@@ -501,6 +554,7 @@ app.post("/items", verifyToken, (req, res) => {
         value,
         date,
         section,
+        target,
         user_id: userId
       }
     });
@@ -525,86 +579,89 @@ app.delete("/items/:id", verifyToken, (req, res) => {
 });
 
 // Add update endpoint before the server start
-app.put("/items/:id", verifyToken, (req, res) => {
+app.put("/items/:id", verifyToken, async (req, res) => {
   const { id } = req.params;
-  const { title, value, date, section } = req.body;
+  const { title, value, date, section, target } = req.body;
   const userId = req.user.userId;
 
-  // Format the date to YYYY-MM-DD
+  // Ensure target is a number or default to 0
+  const numericTarget = target ? parseInt(target, 10) : 0;
   const formattedDate = new Date(date).toISOString().split('T')[0];
 
-  console.log('Update request:', { 
-    id, 
-    title, 
-    value, 
-    date: formattedDate, 
-    section, 
-    userId 
-  });
-
-  // Validate required fields
-  if (!title || !value || !date || !section) {
-    return res.status(400).json({ 
-      error: "All fields are required",
-      received: { title, value, date, section }
+  if (isNaN(numericTarget)) {
+    return res.status(400).json({
+      error: "Invalid target value",
+      details: "Target must be a valid number"
     });
   }
 
-  // First check if the item exists and belongs to the user
-  pool.query(
-    "SELECT * FROM infodata WHERE id = ? AND user_id = ?",
-    [id, userId],
-    (err, results) => {
-      if (err) {
-        console.error("Error checking item:", err);
-        return res.status(500).json({ error: "Failed to check item" });
-      }
+  let connection;
+  try {
+    // Use the retry operation utility
+    connection = await retryOperation(async () => {
+      const conn = await pool.promise().getConnection();
+      await conn.beginTransaction();
+      return conn;
+    });
 
-      if (results.length === 0) {
-        return res.status(404).json({ 
-          error: "Item not found or you don't have permission to update it" 
-        });
-      }
-
-      // Item exists and belongs to user, proceed with update
-      const updateQuery = `
-        UPDATE infodata 
-        SET title = ?, 
-            value = ?, 
-            date = ?, 
-            section = ?
-        WHERE id = ? AND user_id = ?`;
-      
-      const values = [title, value, formattedDate, section, id, userId];
-
-      console.log('Executing update query:', { query: updateQuery, values });
-
-      pool.query(updateQuery, values, (updateErr, updateResult) => {
-        if (updateErr) {
-          console.error("Error updating item:", updateErr);
-          return res.status(500).json({ 
-            error: "Failed to update item",
-            details: updateErr.message,
-            sqlMessage: updateErr.sqlMessage
-          });
-        }
-
-        console.log('Update result:', updateResult);
-
-        res.json({
-          message: "Item updated successfully",
-          item: {
-            id: parseInt(id),
-            title,
-            value,
-            date: formattedDate,
-            section,
-            user_id: userId
-          }
-        });
+    // Update target for all items in the same section
+    if (target !== undefined) {
+      await retryOperation(async () => {
+        await connection.query(
+          "UPDATE infodata SET target = ? WHERE section = ? AND user_id = ?",
+          [numericTarget, section, userId]
+        );
       });
     }
-  );
+
+    // Update specific item
+    await retryOperation(async () => {
+      await connection.query(
+        `UPDATE infodata 
+         SET title = ?, value = ?, date = ?, section = ?
+         WHERE id = ? AND user_id = ?`,
+        [title, value, formattedDate, section, id, userId]
+      );
+    });
+
+    await connection.commit();
+
+    // Fetch updated items
+    const [updatedItems] = await retryOperation(async () => {
+      return await pool.promise().query(
+        "SELECT * FROM infodata WHERE section = ? AND user_id = ?",
+        [section, userId]
+      );
+    });
+
+    res.json({
+      message: "Items updated successfully",
+      updatedItem: {
+        id: parseInt(id),
+        title,
+        value,
+        date: formattedDate,
+        section,
+        target: numericTarget,
+        user_id: userId
+      },
+      sectionItems: updatedItems
+    });
+
+  } catch (error) {
+    if (connection) {
+      await connection.rollback();
+    }
+    console.error("Error updating items:", error);
+    res.status(500).json({ 
+      error: "Failed to update items",
+      details: error.message
+    });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
 });
 
 // Update token verification middleware to handle expired tokens
